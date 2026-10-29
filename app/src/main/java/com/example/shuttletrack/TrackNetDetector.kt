@@ -55,7 +55,7 @@ class TrackNetDetector(
                 } catch (t: Throwable) {
                     d.close()
                 }
-            } catch (_: Throwable) {
+            } catch (e: Throwable) {
                 // เครื่องไม่รองรับ GPU -> ใช้ CPU
             }
         }

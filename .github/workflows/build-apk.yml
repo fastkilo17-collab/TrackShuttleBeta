@@ -33,7 +33,12 @@ jobs:
         with:
           gradle-version: 8.7
       - name: Build debug APK
-        run: gradle :app:assembleDebug
+        run: |
+          set -o pipefail
+          gradle :app:assembleDebug 2>&1 | tee build.log || {
+            grep -E "^e: |error:" build.log | head -20 | while IFS= read -r l; do echo "::error::${l}"; done
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: ShuttleTrack-debug-apk

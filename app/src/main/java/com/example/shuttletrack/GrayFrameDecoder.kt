@@ -113,7 +113,7 @@ class GrayFrameDecoder(
             }
             return count
         } finally {
-            try { codec?.stop() } catch (_: Exception) {}
+            try { codec?.stop() } catch (e: Exception) {}
             codec?.release()
             ex.release()
         }
