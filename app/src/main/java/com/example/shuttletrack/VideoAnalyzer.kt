@@ -6,7 +6,7 @@ import android.graphics.PointF
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 
-/** ผลวิเคราะห์: จุดลูกต่อเฟรม (พิกเซลเทียบภาพ inW x inH) */
+/** ผลวิเคราะห์: จุดลูกต่อเฟรม (พิกเซลเทียบภาพ inW x inH) null = ไม่เจอ */
 class AnalysisResult(
     val uri: Uri,
     val fps: Float,
@@ -21,9 +21,9 @@ class AnalysisResult(
 object VideoAnalyzer {
 
     /**
-     * อ่านวิดีโอทีละ 3 เฟรม -> TrackNet -> จุดลูก
-     * onProgress(done, total) ถูกเรียกจากเธรดที่เรียก analyze (ควรเรียกจากเธรดเบื้องหลัง)
-     * isCancelled ใช้หยุดกลางคัน
+     * หน้าต่างเลื่อนทีละเฟรม: เฟรม (i-2, i-1, i) -> ตำแหน่งลูกในเฟรม i
+     * สองเฟรมแรกไม่มีผล (null)
+     * ควรเรียกจากเธรดเบื้องหลัง
      */
     fun analyze(
         context: Context,
@@ -42,26 +42,36 @@ object VideoAnalyzer {
 
             val total = minOf(maxFrames, (durationMs / 1000f * fps).toInt())
             val points = ArrayList<PointF?>(total)
-            var i = 0
-            while (i + 3 <= total) {
+            val window = ArrayDeque<Bitmap>()
+
+            for (i in 0 until total) {
                 if (isCancelled()) break
-                val frames = (0 until 3).map { j -> frameAt(mmr, i + j, fps, detector.inW, detector.inH) }
-                if (frames.any { it == null }) {
-                    repeat(3) { points.add(null) }
+                val bmp = frameAt(mmr, i, fps, detector.inW, detector.inH)
+                if (bmp == null) {
+                    window.clear()
+                    points.add(null)
                 } else {
-                    points.addAll(detector.detect(frames.map { it!! }))
+                    window.addLast(bmp)
+                    if (window.size > 3) window.removeFirst().recycle()
+                    points.add(if (window.size == 3) detector.detect(window.toList()) else null)
                 }
-                i += 3
-                onProgress(i, total)
+                if (i % 3 == 0) onProgress(i + 1, total)
             }
+            window.forEach { it.recycle() }
+            onProgress(points.size, total)
             return AnalysisResult(uri, fps, detector.inW, detector.inH, points)
         } finally {
             mmr.release()
         }
     }
 
+    /** ดึงเฟรมที่ index แล้วย่อเป็น w x h (ยืดตามต้นฉบับ TrackNet ที่ resize ตรงๆ) */
     fun frameAt(mmr: MediaMetadataRetriever, index: Int, fps: Float, w: Int, h: Int): Bitmap? {
         val timeUs = (index * 1_000_000f / fps).toLong()
-        return mmr.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST, w, h)
+        val src = mmr.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: return null
+        if (src.width == w && src.height == h) return src
+        val out = Bitmap.createScaledBitmap(src, w, h, true)
+        if (out !== src) src.recycle()
+        return out
     }
 }

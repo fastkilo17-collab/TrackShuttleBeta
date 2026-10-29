@@ -1,2 +1,0 @@
-วางไฟล์โมเดลที่แปลงแล้วที่นี่ ชื่อ  tracknet.tflite
-(ดูวิธีแปลงใน tools/convert_to_tflite.py และ README.md)

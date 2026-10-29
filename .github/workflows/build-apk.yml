@@ -10,6 +10,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # 1) แปลงน้ำหนัก TrackNet (TensorFlow) -> tracknet.tflite
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Convert TrackNet weights to TFLite
+        run: |
+          pip install tensorflow-cpu==2.15.1
+          python tools/convert_tf_to_tflite.py --out app/src/main/assets/tracknet.tflite
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracknet-tflite
+          path: app/src/main/assets/tracknet.tflite
+
+      # 2) สร้าง APK (โมเดลถูกฝังในแอป)
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

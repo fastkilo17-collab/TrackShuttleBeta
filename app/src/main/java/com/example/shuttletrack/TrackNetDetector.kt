@@ -10,19 +10,27 @@ import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
 /**
- * ตัวตรวจจับลูกขนไก่ด้วย TrackNet (V2: รับ 3 เฟรม RGB = 9 แชนเนล -> ฮีตแมป 3 ภาพ)
+ * ตัวตรวจจับลูกขนไก่ด้วย TrackNet (Chang-Chia-Chi TF2)
+ *   อินพุต : 3 เฟรมต่อเนื่อง ขาวดำ 0..1 ขนาด inW x inH (512x288)
+ *   เอาต์พุต: แผนที่ความน่าจะเป็นของลูก "ณ เฟรมสุดท้ายของ 3 เฟรม"
  *
- * คลาสนี้ไม่รู้จักวิดีโอหรือกล้อง รับแค่ "บิตแมป 3 ใบต่อเนื่องกัน" จึงใช้ซ้ำกับกล้องสดได้ในอนาคต
- * (CameraX ImageAnalysis -> เก็บ 3 เฟรมล่าสุด -> detect())
+ * ไม่รู้จักวิดีโอหรือกล้อง รับแค่บิตแมป 3 ใบ จึงต่อกับ CameraX ในอนาคตได้
  */
 class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite") : AutoCloseable {
 
     private val interpreter: Interpreter
     val inW: Int
     val inH: Int
-    private val inputNhwc: Boolean
-    private val outputNhwc: Boolean
+    private val nchw: Boolean
     private val frameCount = 3
+
+    private val input: ByteBuffer
+    private val output: ByteBuffer
+    private val inData: FloatArray
+    private val heat: FloatArray
+    private val px: IntArray
+    private val visited: BooleanArray
+    private val stack: IntArray
 
     var threshold = 0.5f
 
@@ -32,73 +40,94 @@ class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite")
             .map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
         interpreter = Interpreter(model, Interpreter.Options().setNumThreads(4))
 
-        val inShape = interpreter.getInputTensor(0).shape()   // [1,H,W,9] หรือ [1,9,H,W]
-        val outShape = interpreter.getOutputTensor(0).shape() // [1,H,W,3] หรือ [1,3,H,W]
-        inputNhwc = inShape[3] == frameCount * 3
-        outputNhwc = outShape[3] == frameCount
-        inH = if (inputNhwc) inShape[1] else inShape[2]
-        inW = if (inputNhwc) inShape[2] else inShape[3]
+        val s = interpreter.getInputTensor(0).shape() // [1,3,H,W] หรือ [1,H,W,3]
+        nchw = s[1] == frameCount
+        inH = if (nchw) s[2] else s[1]
+        inW = if (nchw) s[3] else s[2]
+
+        val plane = inH * inW
+        input = ByteBuffer.allocateDirect(4 * frameCount * plane).order(ByteOrder.nativeOrder())
+        output = ByteBuffer.allocateDirect(4 * plane).order(ByteOrder.nativeOrder())
+        inData = FloatArray(frameCount * plane)
+        heat = FloatArray(plane)
+        px = IntArray(plane)
+        visited = BooleanArray(plane)
+        stack = IntArray(plane)
     }
 
-    /** frames: บิตแมป 3 ใบต่อเนื่อง ขนาด inW x inH. คืนตำแหน่งลูก (พิกเซลในภาพ inW x inH) ต่อเฟรม หรือ null ถ้าไม่เจอ */
-    fun detect(frames: List<Bitmap>): List<PointF?> {
+    /**
+     * frames: บิตแมป 3 ใบต่อเนื่อง ขนาด inW x inH (เก่า -> ใหม่)
+     * คืนตำแหน่งลูกในเฟรมที่ 3 (พิกเซลของภาพ inW x inH) หรือ null ถ้าไม่เจอ
+     */
+    fun detect(frames: List<Bitmap>): PointF? {
         require(frames.size == frameCount) { "ต้องใช้ $frameCount เฟรม" }
-
-        val input = ByteBuffer.allocateDirect(4 * frameCount * 3 * inH * inW).order(ByteOrder.nativeOrder())
-        val fb = input.asFloatBuffer()
         val plane = inH * inW
-        val data = FloatArray(frameCount * 3 * plane)
-        val px = IntArray(plane)
 
         for (f in 0 until frameCount) {
             frames[f].getPixels(px, 0, inW, 0, 0, inW, inH)
             for (i in 0 until plane) {
                 val p = px[i]
-                val r = ((p shr 16) and 0xFF) / 255f
-                val g = ((p shr 8) and 0xFF) / 255f
-                val b = (p and 0xFF) / 255f
-                if (inputNhwc) {
-                    val base = i * frameCount * 3 + f * 3
-                    data[base] = r; data[base + 1] = g; data[base + 2] = b
-                } else {
-                    data[(f * 3) * plane + i] = r
-                    data[(f * 3 + 1) * plane + i] = g
-                    data[(f * 3 + 2) * plane + i] = b
-                }
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val gray = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+                if (nchw) inData[f * plane + i] = gray else inData[i * frameCount + f] = gray
             }
         }
-        fb.put(data)
         input.rewind()
-
-        val output = ByteBuffer.allocateDirect(4 * frameCount * plane).order(ByteOrder.nativeOrder())
+        input.asFloatBuffer().put(inData)
+        input.rewind()
+        output.rewind()
         interpreter.run(input, output)
         output.rewind()
-        val heat = FloatArray(frameCount * plane)
         output.asFloatBuffer().get(heat)
 
-        return List(frameCount) { k -> findBall(heat, k, plane) }
+        return largestBlobCenter(heat)
     }
 
-    private fun heatAt(h: FloatArray, k: Int, x: Int, y: Int, plane: Int): Float =
-        if (outputNhwc) h[(y * inW + x) * frameCount + k] else h[k * plane + y * inW + x]
-
-    /** หายอดสูงสุดของฮีตแมป แล้วหาจุดศูนย์กลางถ่วงน้ำหนักรอบยอด */
-    private fun findBall(h: FloatArray, k: Int, plane: Int): PointF? {
-        var best = 0f; var bx = -1; var by = -1
-        for (y in 0 until inH) for (x in 0 until inW) {
-            val v = heatAt(h, k, x, y, plane)
-            if (v > best) { best = v; bx = x; by = y }
-        }
-        if (best < threshold || bx < 0) return null
-
-        val r = 6
-        var sw = 0f; var sx = 0f; var sy = 0f
-        for (y in maxOf(0, by - r)..minOf(inH - 1, by + r))
-            for (x in maxOf(0, bx - r)..minOf(inW - 1, bx + r)) {
-                val v = heatAt(h, k, x, y, plane)
-                if (v >= threshold * 0.5f) { sw += v; sx += v * x; sy += v * y }
+    /** ตามต้นฉบับ: threshold -> หา blob ที่กรอบใหญ่สุด -> จุดกึ่งกลางกรอบ */
+    private fun largestBlobCenter(h: FloatArray): PointF? {
+        java.util.Arrays.fill(visited, false)
+        var bestArea = 0
+        var bx = 0f
+        var by = 0f
+        for (start in h.indices) {
+            if (visited[start] || h[start] <= threshold) continue
+            var sp = 0
+            stack[sp++] = start
+            visited[start] = true
+            var minX = Int.MAX_VALUE; var maxX = -1
+            var minY = Int.MAX_VALUE; var maxY = -1
+            while (sp > 0) {
+                val cur = stack[--sp]
+                val x = cur % inW
+                val y = cur / inW
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+                if (x > 0) push(cur - 1, h, sp).also { sp = it }
+                if (x < inW - 1) push(cur + 1, h, sp).also { sp = it }
+                if (y > 0) push(cur - inW, h, sp).also { sp = it }
+                if (y < inH - 1) push(cur + inW, h, sp).also { sp = it }
             }
-        return if (sw > 0f) PointF(sx / sw, sy / sw) else PointF(bx.toFloat(), by.toFloat())
+            val w = maxX - minX + 1
+            val hh = maxY - minY + 1
+            val area = w * hh
+            if (area > bestArea) {
+                bestArea = area
+                bx = minX + w / 2f
+                by = minY + hh / 2f
+            }
+        }
+        return if (bestArea > 0) PointF(bx, by) else null
+    }
+
+    private fun push(idx: Int, h: FloatArray, sp: Int): Int {
+        if (visited[idx] || h[idx] <= threshold) return sp
+        visited[idx] = true
+        stack[sp] = idx
+        return sp + 1
     }
 
     override fun close() = interpreter.close()

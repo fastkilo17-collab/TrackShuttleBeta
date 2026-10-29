@@ -7,23 +7,22 @@
 
 ### วิธี A: Android Studio
 1. เปิดโฟลเดอร์นี้ด้วย Android Studio (Hedgehog ขึ้นไป) ให้ sync Gradle
-2. ทำขั้นตอน "เตรียมโมเดล" ด้านล่าง
+2. รันสคริปต์แปลงโมเดลตามหัวข้อ "โมเดล" ด้านล่าง
 3. Build > Build APK(s) → ได้ `app/build/outputs/apk/debug/app-debug.apk`
 
 ### วิธี B: GitHub Actions (ไม่ต้องลงอะไรในเครื่อง)
-อัปโหลดโปรเจกต์ขึ้น GitHub (รวมไฟล์ `tracknet.tflite` ใน assets) → แท็บ Actions → Build APK → ดาวน์โหลด artifact
+แท็บ Actions → Build APK → Run workflow → ดาวน์โหลด artifact `ShuttleTrack-debug-apk`
 
-## เตรียมโมเดล (ต้องทำก่อนสร้าง APK)
-แอปไม่แถมน้ำหนักโมเดล เพราะต้องตรงกับ repo/ไลเซนส์ที่คุณเลือก
-1. เอา TrackNetV2/V3 (PyTorch) สำหรับแบดมินตัน พร้อม checkpoint
-2. แก้ 2 จุด TODO ใน `tools/convert_to_tflite.py` แล้วรัน
-   `python convert_to_tflite.py --weights best.pt --out ../app/src/main/assets/tracknet.tflite`
-3. ข้อกำหนด: อินพุต 3 เฟรม RGB (9 แชนเนล, 0..1) ขนาด 512x288; เอาต์พุตฮีตแมป 3 ภาพ
+## โมเดล
+ใช้ TrackNet TensorFlow 2 ของ [Chang-Chia-Chi](https://github.com/Chang-Chia-Chi/TrackNet-Badminton-Tracking-tensorflow2) (MIT)
+พร้อมน้ำหนักที่เทรนแล้วใน `tools/tracknet_tf/` — GitHub Actions จะแปลงเป็น `tracknet.tflite` และฝังลง APK ให้อัตโนมัติ
+(สเปก: อินพุต 3 เฟรมขาวดำ 512x288, เอาต์พุตแผนที่ลูก ณ เฟรมสุดท้าย)
 
-ถ้าโมเดลคุณใช้จำนวนเฟรมอื่น (เช่น V3 ใช้ 8 เฟรม + background) ให้แก้ `frameCount` ใน `TrackNetDetector.kt` และลูปใน `VideoAnalyzer.kt`
+แปลงเองในเครื่อง: `pip install tensorflow-cpu==2.15.1` แล้ว
+`python tools/convert_tf_to_tflite.py --out app/src/main/assets/tracknet.tflite`
 
 ## การใช้งาน
-เปิดแอป → "เลือกวิดีโอ" → รอวิเคราะห์ (จำกัด 900 เฟรมแรก) → เลื่อนแถบดูผลทีละเฟรม → "ส่งออก CSV"
+เปิดแอป → "เลือกวิดีโอ" → รอวิเคราะห์ (จำกัด 900 เฟรมแรก; ผลเริ่มตั้งแต่เฟรมที่ 3) → เลื่อนแถบดูผลทีละเฟรม → "ส่งออก CSV"
 (CSV: frame, time_s, visible, x_norm, y_norm)
 
 ## ข้อจำกัดที่ควรรู้
