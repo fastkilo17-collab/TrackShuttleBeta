@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.SeekBar
@@ -29,6 +30,8 @@ class MainActivity : Activity() {
 
     private lateinit var pickBtn: Button
     private lateinit var exportBtn: Button
+    private lateinit var gpuBox: CheckBox
+    private lateinit var fastBox: CheckBox
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var seek: SeekBar
@@ -46,6 +49,8 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.WHITE)
         }
         pickBtn = Button(this).apply { text = "เลือกวิดีโอเพื่อวิเคราะห์" }
+        gpuBox = CheckBox(this).apply { text = "ใช้ GPU (เร็วกว่า ถ้าเครื่องรองรับ)"; isChecked = true }
+        fastBox = CheckBox(this).apply { text = "โหมดเร็ว: ตรวจทุก 3 เฟรม" }
         status = TextView(this).apply { text = "ยังไม่ได้เลือกวิดีโอ"; setPadding(0, 16, 0, 8) }
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
         view = ResultView(this)
@@ -53,6 +58,8 @@ class MainActivity : Activity() {
         exportBtn = Button(this).apply { text = "ส่งออก CSV"; isEnabled = false }
 
         root.addView(pickBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(gpuBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(fastBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(progress, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(view, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
@@ -91,13 +98,16 @@ class MainActivity : Activity() {
         progress.progress = 0
         status.text = "กำลังโหลดโมเดล..."
         cancel.set(false)
+        val wantGpu = gpuBox.isChecked
+        val every = if (fastBox.isChecked) 3 else 1
 
         worker.execute {
             try {
-                val detector = TrackNetDetector(this)
+                val detector = TrackNetDetector(this, useGpu = wantGpu)
                 detector.use { det ->
                     val res = VideoAnalyzer.analyze(
                         this, uri, det,
+                        detectEvery = every,
                         onProgress = { done, total ->
                             ui.post {
                                 progress.progress = if (total > 0) done * 100 / total else 0
@@ -128,8 +138,10 @@ class MainActivity : Activity() {
         view.points = res.points
         view.srcW = res.inW
         view.srcH = res.inH
-        val pct = if (res.frameCount > 0) res.detected * 100 / res.frameCount else 0
-        status.text = "เสร็จ: เจอลูก ${res.detected}/${res.frameCount} เฟรม ($pct%)"
+        val pct = if (res.attempted > 0) res.detected * 100 / res.attempted else 0
+        status.text = "เสร็จ: เจอลูก ${res.detected}/${res.attempted} ครั้งที่ตรวจ ($pct%)\n" +
+            "ถอดรหัส %.1f ms/เฟรม · โมเดล %.0f ms/ครั้ง (%s)".format(
+                res.msDecodePerFrame, res.msInferPerRun, if (res.gpu) "GPU" else "CPU")
         seek.max = maxOf(0, res.frameCount - 1)
         seek.progress = 0
         seek.isEnabled = res.frameCount > 0

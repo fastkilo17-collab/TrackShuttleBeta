@@ -1,9 +1,9 @@
 package com.example.shuttletrack
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.PointF
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -14,11 +14,19 @@ import java.nio.channels.FileChannel
  *   อินพุต : 3 เฟรมต่อเนื่อง ขาวดำ 0..1 ขนาด inW x inH (512x288)
  *   เอาต์พุต: แผนที่ความน่าจะเป็นของลูก "ณ เฟรมสุดท้ายของ 3 เฟรม"
  *
- * ไม่รู้จักวิดีโอหรือกล้อง รับแค่บิตแมป 3 ใบ จึงต่อกับ CameraX ในอนาคตได้
+ * รับภาพขาวดำเป็น FloatArray ตรงๆ (ไม่ผูกกับวิดีโอ/Bitmap) จึงต่อกับ CameraX (แชนเนล Y) ได้ในอนาคต
+ * ต้องสร้างและเรียก detect() จากเธรดเดียวกัน (GPU delegate ผูกกับเธรด)
  */
-class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite") : AutoCloseable {
+class TrackNetDetector(
+    context: Context,
+    modelAsset: String = "tracknet.tflite",
+    useGpu: Boolean = false
+) : AutoCloseable {
 
     private val interpreter: Interpreter
+    private var gpu: GpuDelegate? = null
+    val gpuActive: Boolean get() = gpu != null
+
     val inW: Int
     val inH: Int
     private val nchw: Boolean
@@ -26,9 +34,7 @@ class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite")
 
     private val input: ByteBuffer
     private val output: ByteBuffer
-    private val inData: FloatArray
     private val heat: FloatArray
-    private val px: IntArray
     private val visited: BooleanArray
     private val stack: IntArray
 
@@ -38,7 +44,22 @@ class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite")
         val fd = context.assets.openFd(modelAsset)
         val model = FileInputStream(fd.fileDescriptor).channel
             .map(FileChannel.MapMode.READ_ONLY, fd.startOffset, fd.declaredLength)
-        interpreter = Interpreter(model, Interpreter.Options().setNumThreads(4))
+
+        var created: Interpreter? = null
+        if (useGpu) {
+            try {
+                val d = GpuDelegate(GpuDelegate.Options().setPrecisionLossAllowed(true))
+                try {
+                    created = Interpreter(model, Interpreter.Options().addDelegate(d))
+                    gpu = d
+                } catch (t: Throwable) {
+                    d.close()
+                }
+            } catch (_: Throwable) {
+                // เครื่องไม่รองรับ GPU -> ใช้ CPU
+            }
+        }
+        interpreter = created ?: Interpreter(model, Interpreter.Options().setNumThreads(4))
 
         val s = interpreter.getInputTensor(0).shape() // [1,3,H,W] หรือ [1,H,W,3]
         nchw = s[1] == frameCount
@@ -48,40 +69,30 @@ class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite")
         val plane = inH * inW
         input = ByteBuffer.allocateDirect(4 * frameCount * plane).order(ByteOrder.nativeOrder())
         output = ByteBuffer.allocateDirect(4 * plane).order(ByteOrder.nativeOrder())
-        inData = FloatArray(frameCount * plane)
         heat = FloatArray(plane)
-        px = IntArray(plane)
         visited = BooleanArray(plane)
         stack = IntArray(plane)
     }
 
-    /**
-     * frames: บิตแมป 3 ใบต่อเนื่อง ขนาด inW x inH (เก่า -> ใหม่)
-     * คืนตำแหน่งลูกในเฟรมที่ 3 (พิกเซลของภาพ inW x inH) หรือ null ถ้าไม่เจอ
-     */
-    fun detect(frames: List<Bitmap>): PointF? {
-        require(frames.size == frameCount) { "ต้องใช้ $frameCount เฟรม" }
+    /** g0,g1,g2: ภาพขาวดำ inW*inH ค่า 0..1 เก่า -> ใหม่. คืนตำแหน่งลูกในเฟรมที่ 3 หรือ null */
+    fun detect(g0: FloatArray, g1: FloatArray, g2: FloatArray): PointF? {
         val plane = inH * inW
-
-        for (f in 0 until frameCount) {
-            frames[f].getPixels(px, 0, inW, 0, 0, inW, inH)
-            for (i in 0 until plane) {
-                val p = px[i]
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val gray = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
-                if (nchw) inData[f * plane + i] = gray else inData[i * frameCount + f] = gray
-            }
-        }
         input.rewind()
-        input.asFloatBuffer().put(inData)
+        val fb = input.asFloatBuffer()
+        if (nchw) {
+            fb.put(g0); fb.put(g1); fb.put(g2)
+        } else {
+            val tmp = FloatArray(frameCount * plane)
+            for (i in 0 until plane) {
+                tmp[i * 3] = g0[i]; tmp[i * 3 + 1] = g1[i]; tmp[i * 3 + 2] = g2[i]
+            }
+            fb.put(tmp)
+        }
         input.rewind()
         output.rewind()
         interpreter.run(input, output)
         output.rewind()
         output.asFloatBuffer().get(heat)
-
         return largestBlobCenter(heat)
     }
 
@@ -106,10 +117,10 @@ class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite")
                 if (x > maxX) maxX = x
                 if (y < minY) minY = y
                 if (y > maxY) maxY = y
-                if (x > 0) push(cur - 1, h, sp).also { sp = it }
-                if (x < inW - 1) push(cur + 1, h, sp).also { sp = it }
-                if (y > 0) push(cur - inW, h, sp).also { sp = it }
-                if (y < inH - 1) push(cur + inW, h, sp).also { sp = it }
+                if (x > 0) sp = push(cur - 1, h, sp)
+                if (x < inW - 1) sp = push(cur + 1, h, sp)
+                if (y > 0) sp = push(cur - inW, h, sp)
+                if (y < inH - 1) sp = push(cur + inW, h, sp)
             }
             val w = maxX - minX + 1
             val hh = maxY - minY + 1
@@ -130,5 +141,8 @@ class TrackNetDetector(context: Context, modelAsset: String = "tracknet.tflite")
         return sp + 1
     }
 
-    override fun close() = interpreter.close()
+    override fun close() {
+        interpreter.close()
+        gpu?.close()
+    }
 }
