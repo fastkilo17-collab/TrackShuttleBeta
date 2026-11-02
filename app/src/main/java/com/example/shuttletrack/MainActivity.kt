@@ -30,6 +30,7 @@ class MainActivity : Activity() {
 
     private lateinit var pickBtn: Button
     private lateinit var exportBtn: Button
+    private lateinit var yoloBox: CheckBox
     private lateinit var gpuBox: CheckBox
     private lateinit var fastBox: CheckBox
     private lateinit var status: TextView
@@ -49,6 +50,7 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.WHITE)
         }
         pickBtn = Button(this).apply { text = "เลือกวิดีโอเพื่อวิเคราะห์" }
+        yoloBox = CheckBox(this).apply { text = "ใช้โมเดล YOLO ที่เทรนเอง (เบา/เร็ว)"; isChecked = true }
         gpuBox = CheckBox(this).apply { text = "ใช้ GPU (เร็วกว่า ถ้าเครื่องรองรับ)"; isChecked = true }
         fastBox = CheckBox(this).apply { text = "โหมดเร็ว: ตรวจทุก 3 เฟรม" }
         status = TextView(this).apply { text = "ยังไม่ได้เลือกวิดีโอ"; setPadding(0, 16, 0, 8) }
@@ -58,6 +60,7 @@ class MainActivity : Activity() {
         exportBtn = Button(this).apply { text = "ส่งออก CSV"; isEnabled = false }
 
         root.addView(pickBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(yoloBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(gpuBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(fastBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(status, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -99,27 +102,35 @@ class MainActivity : Activity() {
         status.text = "กำลังโหลดโมเดล..."
         cancel.set(false)
         val wantGpu = gpuBox.isChecked
+        val wantYolo = yoloBox.isChecked
         val every = if (fastBox.isChecked) 3 else 1
 
         worker.execute {
             try {
-                val detector = TrackNetDetector(this, useGpu = wantGpu)
-                detector.use { det ->
-                    val res = VideoAnalyzer.analyze(
-                        this, uri, det,
-                        detectEvery = every,
-                        onProgress = { done, total ->
-                            ui.post {
-                                progress.progress = if (total > 0) done * 100 / total else 0
-                                status.text = "วิเคราะห์แล้ว $done / $total เฟรม"
-                            }
-                        },
-                        isCancelled = { cancel.get() }
-                    )
-                    ui.post { onAnalysisDone(res) }
+                val onProgress: (Int, Int) -> Unit = { done, total ->
+                    ui.post {
+                        progress.progress = if (total > 0) done * 100 / total else 0
+                        status.text = "วิเคราะห์แล้ว $done / $total เฟรม"
+                    }
                 }
+                val res = if (wantYolo) {
+                    YoloShuttleDetector(this, useGpu = wantGpu).use { det ->
+                        VideoAnalyzer.analyzeYolo(
+                            this, uri, det, detectEvery = every,
+                            onProgress = onProgress, isCancelled = { cancel.get() }
+                        )
+                    }
+                } else {
+                    TrackNetDetector(this, useGpu = wantGpu).use { det ->
+                        VideoAnalyzer.analyze(
+                            this, uri, det, detectEvery = every,
+                            onProgress = onProgress, isCancelled = { cancel.get() }
+                        )
+                    }
+                }
+                ui.post { onAnalysisDone(res) }
             } catch (e: java.io.FileNotFoundException) {
-                fail("ไม่พบไฟล์โมเดล app/src/main/assets/tracknet.tflite — ดู README ขั้นตอนแปลงโมเดล")
+                fail("ไม่พบไฟล์โมเดลในแอป (${e.message}) — ดู README")
             } catch (e: Exception) {
                 fail("เกิดข้อผิดพลาด: ${e.message}")
             }
@@ -139,7 +150,7 @@ class MainActivity : Activity() {
         view.srcW = res.inW
         view.srcH = res.inH
         val pct = if (res.attempted > 0) res.detected * 100 / res.attempted else 0
-        status.text = "เสร็จ: เจอลูก ${res.detected}/${res.attempted} ครั้งที่ตรวจ ($pct%)\n" +
+        status.text = "เสร็จ [${res.model}]: เจอลูก ${res.detected}/${res.attempted} ครั้งที่ตรวจ ($pct%)\n" +
             "ถอดรหัส %.1f ms/เฟรม · โมเดล %.0f ms/ครั้ง (%s)".format(
                 res.msDecodePerFrame, res.msInferPerRun, if (res.gpu) "GPU" else "CPU")
         seek.max = maxOf(0, res.frameCount - 1)
