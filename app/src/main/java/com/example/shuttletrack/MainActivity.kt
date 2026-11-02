@@ -35,6 +35,7 @@ class MainActivity : Activity() {
 
     private lateinit var pickBtn: Button
     private lateinit var exportBtn: Button
+    private lateinit var liveBtn: Button
     private lateinit var yoloBox: CheckBox
     private lateinit var gpuBox: CheckBox
     private lateinit var fastBox: CheckBox
@@ -63,8 +64,10 @@ class MainActivity : Activity() {
         view = ResultView(this)
         seek = SeekBar(this).apply { isEnabled = false }
         exportBtn = Button(this).apply { text = "ส่งออก CSV"; isEnabled = false }
+        liveBtn = Button(this).apply { text = "โหมดกล้องสด (ทดลอง)" }
 
         root.addView(pickBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        root.addView(liveBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(yoloBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(gpuBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(fastBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -84,6 +87,7 @@ class MainActivity : Activity() {
             )
         }
         exportBtn.setOnClickListener { exportCsv() }
+        liveBtn.setOnClickListener { startActivity(Intent(this, LiveActivity::class.java)) }
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
                 if (fromUser) showFrame(p)
