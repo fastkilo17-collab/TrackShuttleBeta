@@ -1,13 +1,17 @@
 package com.example.shuttletrack
 
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Color
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -19,6 +23,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -171,17 +176,34 @@ class MainActivity : Activity() {
 
     private fun exportCsv() {
         val res = result ?: return
-        val dir = getExternalFilesDir(null) ?: filesDir
-        val file = File(dir, "shuttle_track_${System.currentTimeMillis()}.csv")
-        file.bufferedWriter().use { w ->
-            w.write("frame,time_s,visible,x_norm,y_norm\n")
-            res.points.forEachIndexed { i, p ->
-                val t = i / res.fps
-                if (p == null) w.write("$i,%.3f,0,,\n".format(t))
-                else w.write("$i,%.3f,1,%.4f,%.4f\n".format(t, p.x / res.inW, p.y / res.inH))
-            }
+        val sb = StringBuilder("frame,time_s,visible,x_norm,y_norm\n")
+        res.points.forEachIndexed { i, p ->
+            val t = i / res.fps
+            if (p == null) sb.append(String.format(Locale.US, "%d,%.3f,0,,\n", i, t))
+            else sb.append(String.format(Locale.US, "%d,%.3f,1,%.4f,%.4f\n", i, t, p.x / res.inW, p.y / res.inH))
         }
-        Toast.makeText(this, "บันทึกที่ ${file.absolutePath}", Toast.LENGTH_LONG).show()
+        val name = "shuttle_${res.model.lowercase(Locale.US)}_${System.currentTimeMillis()}.csv"
+        try {
+            val where: String
+            if (Build.VERSION.SDK_INT >= 29) {
+                val cv = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/csv")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                    ?: throw java.io.IOException("สร้างไฟล์ใน Downloads ไม่ได้")
+                contentResolver.openOutputStream(uri)!!.use { it.write(sb.toString().toByteArray()) }
+                where = "โฟลเดอร์ Downloads: $name"
+            } else {
+                val f = File(getExternalFilesDir(null) ?: filesDir, name)
+                f.writeText(sb.toString())
+                where = f.absolutePath
+            }
+            Toast.makeText(this, "บันทึกที่ $where", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "บันทึก CSV ไม่สำเร็จ: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onDestroy() {
