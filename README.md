@@ -21,6 +21,11 @@
 แปลงเองในเครื่อง: `pip install tensorflow-cpu==2.15.1` แล้ว
 `python tools/convert_tf_to_tflite.py --out app/src/main/assets/tracknet.tflite`
 
+### โมเดล YOLO (เบา/เร็ว) — ทดลอง
+`app/src/main/assets/shuttle_yolo.tflite` เป็น YOLOv8n ที่เทรนเองจากป้ายของ TrackNet (ดู `tools/yolo/`, `models/`)
+ในแอปติ๊ก "ใช้โมเดล YOLO" เพื่อเลือก (ไม่ติ๊ก = TrackNet) ดูสถิติ ms ต่อเฟรมท้ายผลวิเคราะห์เพื่อเทียบกัน
+ข้อควรระวังใบอนุญาต AGPL-3.0 ของ ultralytics อยู่ใน `models/README.md`
+
 ## การใช้งาน
 เปิดแอป → "เลือกวิดีโอ" → รอวิเคราะห์ (จำกัด 900 เฟรมแรก; ผลเริ่มตั้งแต่เฟรมที่ 3) → เลื่อนแถบดูผลทีละเฟรม → "ส่งออก CSV"
 (CSV: frame, time_s, visible, x_norm, y_norm)
