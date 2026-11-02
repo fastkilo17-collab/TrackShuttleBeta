@@ -119,7 +119,7 @@ class LiveActivity : ComponentActivity() {
         else requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAM)
     }
 
-    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
+    override fun onRequestPermissionsResult(code: Int, perms: Array<String>, res: IntArray) {
         super.onRequestPermissionsResult(code, perms, res)
         if (code == REQ_CAM && res.firstOrNull() == PackageManager.PERMISSION_GRANTED) startCamera()
         else stats.text = "ต้องอนุญาตกล้องก่อนจึงจะใช้โหมดสดได้"
